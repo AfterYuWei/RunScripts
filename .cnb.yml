@@ -1,0 +1,17 @@
+main:
+  push:
+    - name: sync-to-github
+      imports:
+        - https://cnb.cool/yuweinfo/config/-/blob/main/env.github.yml
+      stages:
+        - name: sync-to-github
+          image: tencentcom/git-sync
+          settings:
+            target_url: https://github.com/AfterYuWei/RunScripts.git
+            auth_type: https
+            username: ${GITHUB_USERNAME}
+            password: ${GITHUB_ACCESS_TOKEN}
+            git_user: 余味
+            git_email: yuwei1228@hotmail.com
+            sync_mode: push
+            force: true
