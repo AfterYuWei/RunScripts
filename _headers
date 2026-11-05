@@ -1,0 +1,3 @@
+# /main.sh 保持可直接 curl 使用的纯文本响应
+/main.sh
+  Content-Type: text/plain; charset=utf-8

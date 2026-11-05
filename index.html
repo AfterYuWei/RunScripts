@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RunScripts</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: #0b0f14;
+      color: #e8eef7;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.7;
+    }
+    main { width: 100%; max-width: 700px; }
+    h1 { margin: 0 0 6px; font-size: 30px; }
+    .sub { margin: 0 0 26px; color: #98a6b8; }
+    .cmd {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 16px;
+      background: #101722;
+      border: 1px solid #243043;
+      border-radius: 12px;
+    }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .cmd code {
+      flex: 1;
+      min-width: 0;
+      color: #d7f7e5;
+      font-size: 14px;
+      line-height: 1.6;
+      overflow-wrap: anywhere;
+    }
+    button {
+      padding: 8px 14px;
+      border: 1px solid #243043;
+      border-radius: 8px;
+      background: #16202e;
+      color: #e8eef7;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    button:hover { border-color: #38bdf8; }
+    .tips { margin: 24px 0; padding-left: 20px; color: #98a6b8; font-size: 14px; line-height: 1.9; }
+    .tips code { padding: 2px 5px; border-radius: 4px; background: rgba(56, 189, 248, .1); color: #cde7ff; font-size: .9em; }
+    .links { font-size: 14px; }
+    a { color: #38bdf8; }
+    @media (max-width: 520px) {
+      .cmd { flex-direction: column; }
+      button { align-self: flex-end; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>RunScripts</h1>
+    <p class="sub">VPS 初始化脚本，用 root 在服务器上运行。</p>
+
+    <div class="cmd">
+      <code id="cmd">bash &lt;(curl -fsSL <span id="origin">当前域名</span>/main.sh)</code>
+      <button id="copy" type="button">复制</button>
+    </div>
+
+    <ul class="tips">
+      <li>先 <code>sudo -i</code> 切到 root；运行后输入 <code>1</code> 选择初始化脚本，<code>0</code> 退出。</li>
+      <li>默认会改 SSH 端口为 <code>32222</code>、关闭密码登录、启用 UFW 并追加公钥；每一项都能在交互中修改或跳过。</li>
+      <li>执行完先开新终端确认能登录，再关闭当前 SSH 会话。</li>
+    </ul>
+
+    <p class="links"><a href="/main.sh">查看脚本</a> · <a href="https://github.com/AfterYuWei/RunScripts">GitHub</a></p>
+  </main>
+
+  <script>
+    document.getElementById('origin').textContent =
+      /^https?:$/.test(location.protocol) ? location.origin : '';
+
+    var button = document.getElementById('copy');
+    button.addEventListener('click', async function () {
+      var text = document.getElementById('cmd').textContent.trim();
+      try {
+        await navigator.clipboard.writeText(text);
+        button.textContent = '已复制';
+      } catch (e) {
+        button.textContent = '请手动复制';
+      }
+      setTimeout(function () { button.textContent = '复制'; }, 1500);
+    });
+  </script>
+</body>
+</html>
