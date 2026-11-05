@@ -14,6 +14,10 @@ set -Eeuo pipefail
 # 使用：
 #   bash <(curl -fsSL <raw 地址>/main.sh)
 #   bash main.sh
+#
+# 支持：
+#   Debian / Ubuntu、RHEL 系、openSUSE、Arch、Alpine Linux
+#   Alpine 需先安装 bash 与 curl：apk add bash curl
 # ============================================================
 
 
@@ -142,6 +146,44 @@ validate_pubkey() {
     fi
 
     return 0
+}
+
+
+# ============================================================
+# 监听端口检测
+#
+# 兼容 iproute2 ss、BusyBox ss 与 netstat。
+# Alpine 的 BusyBox ss 不支持 -H，且列位置与 iproute2 不同，
+# 因此整行匹配 "地址:端口"，不依赖固定列。
+#
+# 返回：
+#   0 端口正在监听
+#   1 端口未被监听
+#   2 无法检测（没有可用工具或没有输出）
+# ============================================================
+
+port_is_listening() {
+
+    local port="$1"
+    local output=""
+
+    if command -v ss >/dev/null 2>&1; then
+        output="$(ss -lnt 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$output" ]] && command -v netstat >/dev/null 2>&1; then
+        output="$(netstat -lnt 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$output" ]]; then
+        return 2
+    fi
+
+    if grep -Eq "[:.]${port}([[:space:]]|\$)" <<< "$output"; then
+        return 0
+    fi
+
+    return 1
 }
 
 
@@ -322,6 +364,9 @@ init_script() {
     elif command -v pacman >/dev/null 2>&1; then
         PKG_MANAGER="pacman"
 
+    elif command -v apk >/dev/null 2>&1; then
+        PKG_MANAGER="apk"
+
     else
         die "暂不支持当前系统的软件包管理器"
     fi
@@ -357,6 +402,10 @@ init_script() {
 
             pacman)
                 pacman -Sy --noconfirm --needed "$@"
+                ;;
+
+            apk)
+                apk add --no-cache "$@"
                 ;;
 
         esac
@@ -400,6 +449,13 @@ init_script() {
 
             pacman)
                 install_packages openssh
+                ;;
+
+            apk)
+                # Alpine 3.19+ 使用 openssh-server，旧版本使用 openssh
+                if ! install_packages openssh-server; then
+                    install_packages openssh || die "无法安装 OpenSSH Server"
+                fi
                 ;;
 
         esac
@@ -632,19 +688,14 @@ init_script() {
 
 
             # 检查新端口是否被其它服务监听
-            if command -v ss >/dev/null 2>&1; then
+            if port_is_listening "$INPUT_PORT"; then
 
-                if ss -lntH 2>/dev/null \
-                    | awk '{print $4}' \
-                    | grep -Eq "[:.]${INPUT_PORT}$"; then
+                if [[ "$INPUT_PORT" != "$CURRENT_SSH_PORT" ]]; then
 
-                    if [[ "$INPUT_PORT" != "$CURRENT_SSH_PORT" ]]; then
+                    warn "端口 ${INPUT_PORT} 当前已经被其他服务监听"
 
-                        warn "端口 ${INPUT_PORT} 当前已经被其他服务监听"
-
-                        if ! ask_yes_no "仍然继续？" "N"; then
-                            continue
-                        fi
+                    if ! ask_yes_no "仍然继续？" "N"; then
+                        continue
                     fi
                 fi
             fi
@@ -1139,6 +1190,39 @@ init_script() {
 
 
     # ============================================================
+    # Alpine community 仓库
+    #
+    # UFW 位于 community 仓库，官方镜像中该行默认被注释。
+    # 仅在需要安装 UFW 时尝试启用，并先备份 repositories。
+    # ============================================================
+
+    enable_alpine_community() {
+
+        local repo_file="/etc/apk/repositories"
+
+        [[ -f "$repo_file" ]] || return 1
+
+        # 已经存在未注释的 community 行
+        if grep -Eq '^[[:space:]]*[^#[:space:]][^#]*/community' "$repo_file"; then
+            return 0
+        fi
+
+        # 官方镜像通常只是把 community 行注释掉了
+        if ! grep -Eq '^[[:space:]]*#.*/community' "$repo_file"; then
+            return 1
+        fi
+
+        cp -a "$repo_file" "${BACKUP_DIR}/apk-repositories" 2>/dev/null || true
+
+        sed -i 's|^[[:space:]]*#[[:space:]]*\(.*/community.*\)|\1|' "$repo_file" || return 1
+
+        apk update >/dev/null 2>&1 || return 1
+
+        return 0
+    }
+
+
+    # ============================================================
     # UFW 安装
     # ============================================================
 
@@ -1196,12 +1280,30 @@ init_script() {
                 pacman -Sy --noconfirm --needed ufw
                 ;;
 
+
+            apk)
+
+                # UFW 位于 community 仓库；iptables 提供 OpenRC 防火墙服务
+                if ! install_packages ufw iptables; then
+
+                    warn "默认仓库未找到 UFW，尝试启用 Alpine community 仓库..."
+
+                    if enable_alpine_community; then
+                        install_packages ufw iptables || true
+                    else
+                        warn "未找到可用的 community 仓库，请手动启用后安装 ufw"
+                    fi
+                fi
+                ;;
+
         esac
 
 
         if ! command -v ufw >/dev/null 2>&1; then
-            die "UFW 安装失败"
+            return 1
         fi
+
+        return 0
     }
 
 
@@ -1213,36 +1315,59 @@ init_script() {
 
     if [[ "$ENABLE_UFW" == true ]]; then
 
-        install_ufw
+        if ! install_ufw; then
+            warn "UFW 安装失败，已跳过防火墙配置（SSH 配置不受影响）"
+            ENABLE_UFW=false
+        fi
+    fi
+
+
+    if [[ "$ENABLE_UFW" == true ]]; then
 
         info "配置 UFW..."
 
+        if (
+            set +e
 
-        # SSH 必定放行
-        if [[ "$CHANGE_SSH_PORT" == true ]]; then
+            # SSH 必定放行
+            if [[ "$CHANGE_SSH_PORT" == true ]]; then
+                ufw allow "${NEW_SSH_PORT}/tcp" || exit 1
+            else
+                ufw allow "${CURRENT_SSH_PORT}/tcp" || exit 1
+            fi
 
-            ufw allow "${NEW_SSH_PORT}/tcp"
+            # Web 端口可选
+            if [[ "$OPEN_WEB_PORTS" == true ]]; then
+                ufw allow 80/tcp || exit 1
+                ufw allow 443/tcp || exit 1
+            fi
+
+            # 不修改默认策略，只启用 UFW
+            ufw --force enable
+        ); then
+
+            ok "UFW 已启用"
+
+            # Alpine / OpenRC：确保 UFW 规则开机自动加载
+            if [[ "$PKG_MANAGER" == "apk" ]] \
+                && command -v rc-update >/dev/null 2>&1 \
+                && [[ -x /etc/init.d/ufw ]]; then
+
+                rc-update add ufw default >/dev/null 2>&1 || true
+                rc-service ufw start >/dev/null 2>&1 || true
+                ok "UFW 已加入 OpenRC 启动项"
+
+            elif [[ "$PKG_MANAGER" == "apk" ]]; then
+
+                warn "未找到 UFW 的 OpenRC 服务，重启后请执行 ufw status 确认规则"
+
+            fi
 
         else
 
-            ufw allow "${CURRENT_SSH_PORT}/tcp"
+            warn "UFW 配置未完全生效，请手动检查：ufw status verbose"
 
         fi
-
-
-        # Web 端口可选
-        if [[ "$OPEN_WEB_PORTS" == true ]]; then
-
-            ufw allow 80/tcp
-            ufw allow 443/tcp
-
-        fi
-
-
-        # 不修改默认策略，只启用 UFW
-        ufw --force enable
-
-        ok "UFW 已启用"
 
     fi
 
@@ -1326,6 +1451,19 @@ init_script() {
 
 
         # --------------------------------------------------------
+        # OpenRC（Alpine / Gentoo）
+        # --------------------------------------------------------
+
+        if command -v rc-service >/dev/null 2>&1; then
+
+            if rc-service sshd restart >/dev/null 2>&1; then
+                info "SSH 管理方式: OpenRC sshd"
+                return 0
+            fi
+        fi
+
+
+        # --------------------------------------------------------
         # SysV init fallback
         # --------------------------------------------------------
 
@@ -1381,38 +1519,38 @@ init_script() {
         info "检查 SSH ${NEW_SSH_PORT} 端口..."
 
 
-        if command -v ss >/dev/null 2>&1; then
+        LISTEN_STATUS=0
 
-            if ss -lntH 2>/dev/null \
-                | awk '{print $4}' \
-                | grep -Eq "[:.]${NEW_SSH_PORT}$"; then
+        port_is_listening "$NEW_SSH_PORT" || LISTEN_STATUS=$?
 
+        case "$LISTEN_STATUS" in
+
+            0)
                 ok "SSH 已监听 ${NEW_SSH_PORT}/tcp"
+                ;;
 
-            else
+            2)
+                warn "缺少 ss / netstat，无法自动确认 SSH 监听端口"
+                ;;
 
+            *)
                 error "没有检测到 SSH 监听 ${NEW_SSH_PORT}/tcp"
 
                 echo
                 echo "当前监听状态："
                 echo
 
-                ss -lntp 2>/dev/null \
-                    | grep -E 'ssh|sshd|systemd' \
+                ss -lnt 2>/dev/null \
+                    || netstat -lnt 2>/dev/null \
                     || true
 
                 echo
                 warn "没有删除任何旧 SSH 或 UFW 规则"
 
                 die "新 SSH 端口验证失败"
+                ;;
 
-            fi
-
-        else
-
-            warn "系统没有 ss 命令，无法自动确认 SSH 监听端口"
-
-        fi
+        esac
 
     fi
 

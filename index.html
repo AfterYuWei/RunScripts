@@ -69,7 +69,7 @@
     </div>
 
     <ul class="tips">
-      <li>先 <code>sudo -i</code> 切到 root；运行后输入 <code>1</code> 选择初始化脚本，<code>0</code> 退出。</li>
+      <li>先 <code>sudo -i</code> 切到 root（Alpine 需先 <code>apk add bash curl</code>）；运行后输入 <code>1</code> 选择初始化脚本，<code>0</code> 退出。</li>
       <li>默认会改 SSH 端口为 <code>32222</code>、关闭密码登录、启用 UFW 并追加公钥；每一项都能在交互中修改或跳过。</li>
       <li>执行完先开新终端确认能登录，再关闭当前 SSH 会话。</li>
     </ul>
